@@ -1229,9 +1229,159 @@
   .api-key-display:hover { border-color: var(--danger); color: var(--danger); }
 
 
+  /* ── Whisper loading banner ── */
+  .whisper-banner {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(120px);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+    z-index: 300;
+    transition: transform 0.35s cubic-bezier(0.4,0,0.2,1);
+    min-width: 280px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .whisper-banner.show { transform: translateX(-50%) translateY(0); }
+  .whisper-banner .wb-icon { font-size: 20px; flex-shrink: 0; }
+  .whisper-banner .wb-text { flex: 1; line-height: 1.4; }
+  .whisper-banner .wb-title { font-weight: 600; color: var(--text); font-size: 13px; }
+  .whisper-banner .wb-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .whisper-progress {
+    width: 100%;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 10px;
+    overflow: hidden;
+  }
+  .whisper-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.3s;
+  }
+
+  /* Recording waveform animation */
+  .waveform {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    height: 24px;
+  }
+  .waveform-bar {
+    width: 3px;
+    background: var(--danger);
+    border-radius: 2px;
+    animation: wave 0.8s ease-in-out infinite;
+  }
+  .waveform-bar:nth-child(1) { animation-delay: 0s; height: 8px; }
+  .waveform-bar:nth-child(2) { animation-delay: 0.1s; height: 16px; }
+  .waveform-bar:nth-child(3) { animation-delay: 0.2s; height: 24px; }
+  .waveform-bar:nth-child(4) { animation-delay: 0.3s; height: 16px; }
+  .waveform-bar:nth-child(5) { animation-delay: 0.4s; height: 8px; }
+  @keyframes wave {
+    0%, 100% { transform: scaleY(0.4); opacity: 0.6; }
+    50% { transform: scaleY(1); opacity: 1; }
+  }
+
+  .mic-btn .waveform, .chat-mic-btn .waveform { display: none; }
+  .mic-btn.recording .waveform { display: flex; }
+  .mic-btn.recording span.mic-icon { display: none; }
+  .chat-mic-btn.recording .waveform { display: flex; }
+  .chat-mic-btn.recording span.mic-icon { display: none; }
+
+
 </style>
 </head>
 <body>
+<script type="module">
+  import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js';
+  env.allowLocalModels = false;
+
+  let transcriber = null;
+  let isLoading = false;
+
+  window.whisperReady = false;
+
+  function showBanner(title, sub, progress) {
+    const b = document.getElementById('whisperBanner');
+    b.querySelector('.wb-title').textContent = title;
+    b.querySelector('.wb-sub').textContent = sub;
+    if(progress !== undefined) {
+      document.getElementById('whisperProgressBar').style.width = progress + '%';
+    }
+    b.classList.add('show');
+  }
+
+  function hideBanner() {
+    document.getElementById('whisperBanner').classList.remove('show');
+  }
+
+  async function loadWhisper() {
+    if(transcriber || isLoading) return;
+    isLoading = true;
+    showBanner('Chargement de Whisper…', 'Première fois : ~30s · Ensuite mis en cache', 5);
+
+    try {
+      transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny.en', {
+        progress_callback: (p) => {
+          if(p.status === 'downloading') {
+            const pct = p.total ? Math.round((p.loaded / p.total) * 90) : 0;
+            showBanner('Téléchargement du modèle…', Math.round((p.loaded||0)/1024/1024) + ' MB / ' + Math.round((p.total||0)/1024/1024) + ' MB', pct);
+          }
+        }
+      });
+      window.whisperReady = true;
+      window.whisperTranscribe = async function(audioBlob) {
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        const audioCtx = new AudioContext({ sampleRate: 16000 });
+        const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+        const float32 = decoded.getChannelData(0);
+        const result = await transcriber(float32, { language: 'english', task: 'transcribe' });
+        return result.text.trim();
+      };
+      showBanner('Whisper prêt ✓', 'Reconnaissance vocale locale activée', 100);
+      setTimeout(hideBanner, 2000);
+    } catch(e) {
+      console.error('Whisper load error:', e);
+      showBanner('Erreur de chargement', e.message, 0);
+      setTimeout(hideBanner, 4000);
+      isLoading = false;
+    }
+  }
+
+  // Expose loader
+  window.loadWhisper = loadWhisper;
+
+  // Auto-load after API key is entered (app becomes visible)
+  const observer = new MutationObserver(() => {
+    const app = document.getElementById('mainApp');
+    if(app && app.style.display !== 'none' && !transcriber && !isLoading) {
+      loadWhisper();
+    }
+  });
+  observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['style'] });
+</script>
+
+<!-- Whisper status banner -->
+<div class="whisper-banner" id="whisperBanner">
+  <div class="wb-icon">🧠</div>
+  <div class="wb-text">
+    <div class="wb-title">Chargement de Whisper…</div>
+    <div class="wb-sub">Première fois : ~30s</div>
+    <div class="whisper-progress"><div class="whisper-progress-bar" id="whisperProgressBar"></div></div>
+  </div>
+</div>
+
 <div class="api-screen" id="apiScreen">
   <div class="api-card">
     <div class="api-logo">Prod<span>Speak</span></div>
@@ -1337,7 +1487,14 @@
         <div style="font-size:13px;color:var(--text-dim);margin-top:4px">Utilise un max de mots-clés — puis clique sur Analyser</div>
       </div>
     </div>
-    <button class="mic-btn" id="micBtn" onclick="toggleRecording()">🎙</button>
+    <button class="mic-btn" id="micBtn" onclick="toggleRecording()">
+      <span class="mic-icon">🎙</span>
+      <div class="waveform">
+        <div class="waveform-bar"></div><div class="waveform-bar"></div>
+        <div class="waveform-bar"></div><div class="waveform-bar"></div>
+        <div class="waveform-bar"></div>
+      </div>
+    </button>
     <div id="recordStatus" style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:12px">Appuie pour parler</div>
     <div class="transcript-box" id="transcriptBox">Ta phrase apparaîtra ici…</div>
     <div class="record-actions">
@@ -1377,7 +1534,14 @@
     </div>
     <div class="chat-messages" id="chatMessages"></div>
     <div class="chat-input-area">
-      <button class="chat-mic-btn" id="chatMicBtn" onclick="toggleChatRecording()">🎙</button>
+      <button class="chat-mic-btn" id="chatMicBtn" onclick="toggleChatRecording()">
+      <span class="mic-icon">🎙</span>
+      <div class="waveform">
+        <div class="waveform-bar"></div><div class="waveform-bar"></div>
+        <div class="waveform-bar"></div><div class="waveform-bar"></div>
+        <div class="waveform-bar"></div>
+      </div>
+    </button>
       <textarea class="chat-text-input" id="chatInput" placeholder="Type or use mic… respond in English!" onkeydown="handleChatKey(event)" rows="1"></textarea>
       <button class="chat-send-btn" id="chatSendBtn" onclick="sendChatMessage()">↑</button>
     </div>
@@ -1543,8 +1707,6 @@ const SCENARIOS = [
 // ============================================================
 let currentScenario = null;
 let transcript = "";
-let recognition = null;
-let chatRecognition = null;
 let isRecording = false;
 let isChatRecording = false;
 let chatHistory = [];
@@ -1645,68 +1807,74 @@ function countUsedKeywords(text) {
 // ============================================================
 //  SPEECH RECOGNITION
 // ============================================================
-function getSpeechRecognition() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if(!SpeechRecognition) return null;
-  const r = new SpeechRecognition();
-  r.lang = 'en-US';
-  r.continuous = false;
-  r.interimResults = true;
-  return r;
+// ============================================================
+//  WHISPER STT — MediaRecorder + transformers.js
+// ============================================================
+let mediaStream = null;
+let mediaRecorder = null;
+let audioChunks = [];
+let chatMediaRecorder = null;
+let chatAudioChunks = [];
+
+async function getMediaStream() {
+  if(mediaStream && mediaStream.active) return mediaStream;
+  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  return mediaStream;
 }
 
 function toggleRecording() {
-  if(isRecording) {
-    stopRecording();
-  } else {
-    startRecording();
-  }
+  if(isRecording) stopRecording();
+  else startRecording();
 }
 
-function startRecording() {
-  recognition = getSpeechRecognition();
-  if(!recognition) {
-    showToast("Ton navigateur ne supporte pas la reconnaissance vocale. Tape ta phrase directement.", true);
-    const box = document.getElementById('transcriptBox');
-    box.contentEditable = 'true';
-    box.style.border = '1px solid var(--accent2)';
-    box.focus();
+async function startRecording() {
+  if(!window.whisperReady) {
+    showToast('Whisper se charge encore… patiente quelques secondes 🧠', false);
+    if(window.loadWhisper) window.loadWhisper();
     return;
   }
-
-  isRecording = true;
-  const btn = document.getElementById('micBtn');
-  btn.classList.add('recording');
-  btn.textContent = '⏹';
-  document.getElementById('recordStatus').textContent = '🔴 Écoute en cours…';
-
-  recognition.onresult = (e) => {
-    let interim = '';
-    let final = '';
-    for(let i = e.resultIndex; i < e.results.length; i++) {
-      if(e.results[i].isFinal) final += e.results[i][0].transcript;
-      else interim += e.results[i][0].transcript;
-    }
-    transcript = (transcript + ' ' + final).trim() || interim;
-    const box = document.getElementById('transcriptBox');
-    box.textContent = transcript || interim;
-    box.className = 'transcript-box has-content';
-    updateKwProgress();
-    document.getElementById('analyzeBtn').disabled = false;
-  };
-
-  recognition.onerror = () => stopRecording();
-  recognition.onend = () => { if(isRecording) stopRecording(); };
-  recognition.start();
+  try {
+    const stream = await getMediaStream();
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = e => { if(e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      await processWhisper(blob);
+    };
+    mediaRecorder.start();
+    isRecording = true;
+    const btn = document.getElementById('micBtn');
+    btn.classList.add('recording');
+    document.getElementById('recordStatus').textContent = '🔴 Écoute en cours… (clique pour arrêter)';
+  } catch(e) {
+    showToast('Micro non accessible : ' + e.message, true);
+  }
 }
 
 function stopRecording() {
+  if(mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   isRecording = false;
-  if(recognition) { try { recognition.stop(); } catch(e){} }
   const btn = document.getElementById('micBtn');
   btn.classList.remove('recording');
-  btn.textContent = '🎙';
-  document.getElementById('recordStatus').textContent = transcript ? 'Phrase capturée ✓' : 'Appuie pour parler';
+  document.getElementById('recordStatus').textContent = '⏳ Transcription en cours…';
+}
+
+async function processWhisper(blob) {
+  try {
+    const text = await window.whisperTranscribe(blob);
+    if(!text) { document.getElementById('recordStatus').textContent = 'Rien détecté — réessaie'; return; }
+    transcript = (transcript + ' ' + text).trim();
+    const box = document.getElementById('transcriptBox');
+    box.textContent = transcript;
+    box.className = 'transcript-box has-content';
+    updateKwProgress();
+    document.getElementById('analyzeBtn').disabled = false;
+    document.getElementById('recordStatus').textContent = 'Phrase capturée ✓';
+  } catch(e) {
+    document.getElementById('recordStatus').textContent = 'Erreur de transcription';
+    showToast('Erreur Whisper : ' + e.message, true);
+  }
 }
 
 function clearTranscript() {
@@ -1925,45 +2093,45 @@ function handleChatKey(e) {
 //  CHAT VOICE
 // ============================================================
 function toggleChatRecording() {
-  if(isChatRecording) {
-    stopChatRecording();
-  } else {
-    startChatRecording();
-  }
+  if(isChatRecording) stopChatRecording();
+  else startChatRecording();
 }
 
-function startChatRecording() {
-  chatRecognition = getSpeechRecognition();
-  if(!chatRecognition) {
-    showToast("Utilise le clavier pour cette partie.", true);
+async function startChatRecording() {
+  if(!window.whisperReady) {
+    showToast('Whisper se charge encore… patiente quelques secondes 🧠', false);
+    if(window.loadWhisper) window.loadWhisper();
     return;
   }
-  isChatRecording = true;
-  const btn = document.getElementById('chatMicBtn');
-  btn.classList.add('recording');
-
-  let finalText = '';
-  chatRecognition.onresult = (e) => {
-    for(let i = e.resultIndex; i < e.results.length; i++) {
-      if(e.results[i].isFinal) {
-        finalText += e.results[i][0].transcript;
-        document.getElementById('chatInput').value = finalText;
-      }
-    }
-  };
-  chatRecognition.onend = () => {
-    isChatRecording = false;
-    btn.classList.remove('recording');
-    if(finalText.trim()) sendChatMessage(finalText.trim());
-  };
-  chatRecognition.onerror = () => { isChatRecording = false; btn.classList.remove('recording'); };
-  chatRecognition.start();
+  try {
+    const stream = await getMediaStream();
+    chatAudioChunks = [];
+    chatMediaRecorder = new MediaRecorder(stream);
+    chatMediaRecorder.ondataavailable = e => { if(e.data.size > 0) chatAudioChunks.push(e.data); };
+    chatMediaRecorder.onstop = async () => {
+      const blob = new Blob(chatAudioChunks, { type: 'audio/webm' });
+      const btn = document.getElementById('chatMicBtn');
+      btn.classList.remove('recording');
+      try {
+        const text = await window.whisperTranscribe(blob);
+        if(text) {
+          document.getElementById('chatInput').value = text;
+          sendChatMessage(text);
+        }
+      } catch(e) { showToast('Erreur Whisper : ' + e.message, true); }
+      isChatRecording = false;
+    };
+    chatMediaRecorder.start();
+    isChatRecording = true;
+    document.getElementById('chatMicBtn').classList.add('recording');
+  } catch(e) {
+    showToast('Micro non accessible : ' + e.message, true);
+  }
 }
 
 function stopChatRecording() {
+  if(chatMediaRecorder && chatMediaRecorder.state !== 'inactive') chatMediaRecorder.stop();
   isChatRecording = false;
-  document.getElementById('chatMicBtn').classList.remove('recording');
-  if(chatRecognition) { try { chatRecognition.stop(); } catch(e){} }
 }
 
 // ============================================================
